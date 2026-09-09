@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""
+Python TCP Port Scanner
+
+Author: Benjamin Miller
+Version: 1.0
+Date: 2026
+
+A fast, reliable TCP connect scanner using Python's standard library.
+
+Examples:
+    python port_scanner.py -o 192.168.1.10 -p 22,80,443
+    python port_scanner.py -o 192.168.1.10 -p 1-1024
+    python port_scanner.py -o example.com -p 80,443 -w 100
+
+Only scan systems you own or have explicit permission to test.
+"""
+
+import argparse
+import socket
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+
+
+DEFAULT_TIMEOUT = 1.0
+DEFAULT_WORKERS = 100
+
+
+def parse_ports(port_string):
+    """Parse individual ports and port ranges."""
+    ports = set()
+
+    for item in port_string.split(","):
+        item = item.strip()
+
+        if not item:
+            continue
+
+        try:
+            if "-" in item:
+                start, end = map(int, item.split("-", 1))
+
+                if start > end:
+                    start, end = end, start
+
+                ports.update(range(start, end + 1))
+            else:
+                ports.add(int(item))
+
+        except ValueError:
+            raise ValueError(f"Invalid port specification: {item}")
+
+    for port in ports:
+        if not 1 <= port <= 65535:
+            raise ValueError(
+                f"Port {port} is invalid. "
+                "Ports must be between 1 and 65535."
+            )
+
+    return sorted(ports)
+
+
+def resolve_target(target):
+    """Resolve a hostname or IP address."""
+    try:
+        return socket.gethostbyname(target)
+    except socket.gaierror:
+        raise ValueError(f"Unable to resolve target: {target}")
+
+
+def scan_port(target_ip, port, timeout):
+    """Check whether a TCP port is accepting connections."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+
+            result = sock.connect_ex((target_ip, port))
+
+            return port, result == 0
+
+    except OSError:
+        return port, False
+
+
+def scan_ports(target_ip, ports, timeout, workers):
+    """Scan ports concurrently."""
+    open_ports = []
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                scan_port,
+                target_ip,
+                port,
+                timeout
+            ): port
+            for port in ports
+        }
+
+        for future in as_completed(futures):
+            port, is_open = future.result()
+
+            if is_open:
+                open_ports.append(port)
+                print(f"[+] {port}/tcp OPEN")
+
+    return sorted(open_ports)
+
+
+def create_parser():
+    """Create command-line argument parser."""
+    parser = argparse.ArgumentParser(
+        description="Fast TCP port scanner written in Python."
+    )
+
+    parser.add_argument(
+        "-o",
+        "--host",
+        required=True,
+        help="Hostname or IPv4 address to scan."
+    )
+
+    parser.add_argument(
+        "-p",
+        "--ports",
+        required=True,
+        help="Ports or ranges. Example: 22,80,443 or 1-1024."
+    )
+
+    parser.add_argument(
+        "-t",
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help=f"Connection timeout in seconds "
+             f"(default: {DEFAULT_TIMEOUT})."
+    )
+
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help=f"Number of concurrent workers "
+             f"(default: {DEFAULT_WORKERS})."
+    )
+
+    return parser
+
+
+def main():
+    parser = create_parser()
+    args = parser.parse_args()
+
+    if args.timeout <= 0:
+        parser.error("Timeout must be greater than zero.")
+
+    if args.workers <= 0:
+        parser.error("Workers must be greater than zero.")
+
+    try:
+        target_ip = resolve_target(args.host)
+        ports = parse_ports(args.ports)
+
+    except ValueError as error:
+        parser.error(str(error))
+
+    start_time = datetime.now()
+
+    print()
+    print("=" * 55)
+    print("             BENJAMIN MILLER")
+    print("              TCP PORT SCANNER")
+    print("=" * 55)
+    print(f"Target       : {args.host}")
+    print(f"IP Address   : {target_ip}")
+    print(f"Ports        : {len(ports)}")
+    print(f"Timeout      : {args.timeout}s")
+    print(f"Workers      : {args.workers}")
+    print(f"Started      : {start_time:%Y-%m-%d %H:%M:%S}")
+    print("-" * 55)
+
+    try:
+        open_ports = scan_ports(
+            target_ip,
+            ports,
+            args.timeout,
+            args.workers
+        )
+
+    except KeyboardInterrupt:
+        print("\n[!] Scan interrupted by user.")
+        return
+
+    end_time = datetime.now()
+    duration = end_time - start_time
+
+    print("-" * 55)
+    print("SCAN COMPLETE")
+    print("-" * 55)
+
+    if open_ports:
+        print(f"[+] Open ports: {len(open_ports)}")
+
+        for port in open_ports:
+            try:
+                service = socket.getservbyport(port, "tcp")
+            except OSError:
+                service = "unknown"
+
+            print(f"    {port}/tcp  {service}")
+
+    else:
+        print("[-] No open TCP ports found.")
+
+    print()
+    print(f"Finished     : {end_time:%Y-%m-%d %H:%M:%S}")
+    print(f"Duration     : {duration.total_seconds():.2f} seconds")
+    print("=" * 55)
+
+
+if __name__ == "__main__":
+    main()
+
+Usage
+
+python port_scanner.py -o 192.168.1.10 -p 22,80,443
+
+Scan a range:
+
+python port_scanner.py -o 192.168.1.10 -p 1-1024
+
+Faster scan with more workers:
+
+python port_scanner.py -o 192.168.1.10 -p 1-1024 -w 200 -t 0.5
+
+This version stays with Python's standard library and performs TCP connect scanning; it isn't intended to replace a full-featured tool such as Nmap.
+
+Use it only on systems you own or are authorized to test.
